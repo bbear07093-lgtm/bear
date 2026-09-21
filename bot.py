@@ -17,7 +17,8 @@ from config import BOT_TOKEN, ADMIN_ID
 from database import (
     init_db, add_video, get_video, delete_video, list_all_videos,
     register_user_start, get_total_users, get_today_users,
-    get_week_users, get_active_users_last_24h,
+    get_week_users, get_active_users_last_24h, get_today_active_users,
+    update_last_activity,
     get_all_user_ids, create_referral, check_referral_code, get_all_referrals,
     set_ad, get_ad, remove_ad, increment_ad_count,
     get_active_mandatory_subs, is_user_completed_sub, mark_user_completed_sub,
@@ -44,6 +45,7 @@ WEBHOOK_URL = f"https://{RENDER_EXTERNAL_HOSTNAME}{WEBHOOK_PATH}"
 BOT_USERNAME = "KINO_bor_botbot"  # @ belgisisiz
 CHANNEL_USERNAME = "@kino_bori"  # Kanal username
 CHANNEL_URL = "https://t.me/kino_bori"  # Kanal URL
+
 
 # ======================== Reklama ========================
 async def send_ad(bot, chat_id):
@@ -79,12 +81,12 @@ async def check_telegram_membership(bot, user_id, sub_data):
     """Kanal/guruh/zayafka a'zoligini tekshiradi"""
     try:
         chat_id = None
-        
+
         if sub_data.get("chat_id"):
             chat_id = sub_data["chat_id"]
         else:
             identifier = sub_data["identifier"]
-            
+
             if identifier.startswith("@"):
                 chat_id = identifier
             elif "t.me/" in identifier:
@@ -101,13 +103,13 @@ async def check_telegram_membership(bot, user_id, sub_data):
                         chat_id = "@" + parts[-1]
             else:
                 chat_id = "@" + identifier.lstrip("@")
-        
+
         if not chat_id:
             return None
-        
+
         member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
         return member.status in ["member", "administrator", "creator"]
-        
+
     except Exception as e:
         print(f"Membership check error: {e}")
         return False
@@ -135,9 +137,9 @@ async def show_mandatory_subs(update: Update, context: CallbackContext):
     for idx, sub in enumerate(incomplete, start=1):
         sub_type = sub["type"]
         identifier = sub["identifier"]
-        
+
         button_text = f"📢 {idx}-kanal"
-        
+
         if sub_type in ("telegram", "group"):
             if identifier.startswith("@"):
                 url = f"https://t.me/{identifier[1:]}"
@@ -145,17 +147,17 @@ async def show_mandatory_subs(update: Update, context: CallbackContext):
                 url = identifier
             else:
                 url = f"https://t.me/{identifier}"
-                
+
         elif sub_type == "invite":
             url = identifier
-            
+
         elif sub_type == "bot":
             bot_username = identifier.replace("@", "").replace("https://t.me/", "").split("?")[0].split("/")[-1]
             url = f"https://t.me/{bot_username}?start=start"
-            
+
         elif sub_type in ("youtube", "instagram", "website"):
             url = identifier
-            
+
         else:
             url = identifier
 
@@ -202,10 +204,10 @@ async def check_and_handle_mandatory_subs(update: Update, context: CallbackConte
 
     async def check_sub(sub):
         already_completed = await is_user_completed_sub(user_id, sub["id"])
-        
+
         if sub["type"] in telegram_types:
             result = await check_telegram_membership(context.bot, user_id, sub)
-            
+
             if result is True:
                 if not already_completed:
                     await mark_user_completed_sub(user_id, sub["id"])
@@ -323,6 +325,7 @@ async def start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     referral_code = context.args[0] if context.args else None
     await register_user_start(user_id, referral_code)
+    await update_last_activity(user_id)
 
     if await check_and_handle_mandatory_subs(update, context):
         return
@@ -334,22 +337,23 @@ async def start(update: Update, context: CallbackContext):
 async def referral(update: Update, context: CallbackContext):
     """Foydalanuvchi o'zining referal havolasini va statistikasini ko'radi"""
     user_id = update.effective_user.id
-    
+
+    await update_last_activity(user_id)
+
     if await check_and_handle_mandatory_subs(update, context):
         return
-    
-    # Foydalanuvchi qancha odam qo'shgan
+
     count = await get_user_referral_count(user_id)
-    
+
     refer_link = f"https://t.me/{BOT_USERNAME}?start={user_id}"
-    
+
     text = (
         f"🔗 <b>Sizning referal havolangiz:</b>\n"
         f"<code>{refer_link}</code>\n\n"
         f"👥 <b>Umumiy qo'shgan odamlaringiz:</b> {count} ta\n\n"
         f"<i>Havolani do'stlaringizga yuboring va botga qo'shilingan har bir do'stingiz hisoblanadi!</i>"
     )
-    
+
     await update.message.reply_text(
         text,
         parse_mode="HTML",
@@ -401,27 +405,27 @@ async def userref(update: Update, context: CallbackContext):
     """Admin foydalanuvchining referallarini ko'radi"""
     if update.effective_user.id != ADMIN_ID:
         return
-    
+
     if not context.args:
         await update.message.reply_text("📛 Foydalanuvchi ID sini kiriting: /userref 123456789")
         return
-    
+
     try:
         target_user_id = int(context.args[0])
     except ValueError:
         await update.message.reply_text("❌ Noto'g'ri ID formati.")
         return
-    
+
     count = await get_user_referral_count(target_user_id)
-    
+
     refer_link = f"https://t.me/{BOT_USERNAME}?start={target_user_id}"
-    
+
     text = (
         f"🔗 <b>Foydalanuvchi {target_user_id} referal havolasi:</b>\n"
         f"<code>{refer_link}</code>\n\n"
         f"👥 <b>Umumiy qo'shgan odamlari:</b> {count} ta"
     )
-    
+
     await update.message.reply_text(
         text,
         parse_mode="HTML",
@@ -437,12 +441,16 @@ async def stats(update: Update, context: CallbackContext):
     today = await get_today_users()
     week = await get_week_users()
     active = await get_active_users_last_24h()
+    today_active = await get_today_active_users()
+
     await update.message.reply_text(
-        f"📊 Statistika\n\n"
-        f"👥 Umumiy: {total}\n"
-        f"🆕 Bugun: {today}\n"
-        f"📅 7 kunda: {week}\n"
-        f"🟢 24 soatda faol: {active}"
+        f"📊 <b>Statistika</b>\n\n"
+        f"👥 Umumiy foydalanuvchilar: <b>{total}</b>\n"
+        f"🆕 Bugun qo'shildi: <b>{today}</b>\n"
+        f"📅 7 kunda qo'shildi: <b>{week}</b>\n"
+        f"🟢 24 soatda faol: <b>{active}</b>\n"
+        f"🔥 Bugun faol: <b>{today_active}</b>",
+        parse_mode="HTML"
     )
 
 
@@ -470,12 +478,14 @@ async def broadcast_send(update: Update, context: CallbackContext):
 
 async def _broadcast_task(msg, progress_msg, user_ids, total):
     semaphore = asyncio.Semaphore(25)
+
     async def send_to_user(uid):
         async with semaphore:
             try:
                 await msg.copy(chat_id=uid)
             except:
                 pass
+
     tasks = [asyncio.create_task(send_to_user(uid)) for uid in user_ids]
     await asyncio.gather(*tasks)
     await progress_msg.edit_text(f"✅ Xabar {total} ta foydalanuvchiga yuborildi.")
@@ -743,7 +753,7 @@ async def list_mandatory(update: Update, context: CallbackContext):
 
     if len(text) > 4000:
         for i in range(0, len(text), 4000):
-            await update.message.reply_text(text[i:i+4000])
+            await update.message.reply_text(text[i:i + 4000])
     else:
         await update.message.reply_text(text)
 
@@ -751,6 +761,9 @@ async def list_mandatory(update: Update, context: CallbackContext):
 # ======================== Kod yuborish ========================
 async def handle_code(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
+
+    # ✅ HAR BIR interaksiyada aktivlikni yangilash
+    await update_last_activity(user_id)
 
     if await check_and_handle_mandatory_subs(update, context):
         return
