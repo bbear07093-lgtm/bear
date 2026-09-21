@@ -3,6 +3,7 @@ from config import DATABASE_URL
 
 pool = None
 
+
 async def init_db():
     global pool
     pool = await asyncpg.create_pool(DATABASE_URL)
@@ -66,7 +67,6 @@ async def init_db():
             )
         ''')
 
-        # chat_id QO'SHISH
         try:
             await conn.execute('''
                 ALTER TABLE mandatory_subscriptions 
@@ -107,6 +107,15 @@ async def register_user_start(user_id, referral_code=None):
                 )
 
 
+async def update_last_activity(user_id: int):
+    """Har bir interaksiyada chaqiriladi — aktivlikni yangilaydi"""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE user_id = $1",
+            user_id
+        )
+
+
 async def get_user_referral_count(user_id):
     """Foydalanuvchi qancha odam qo'shganini qaytaradi"""
     async with pool.acquire() as conn:
@@ -127,22 +136,41 @@ async def get_total_users():
 
 
 async def get_today_users():
+    """O'zbekiston vaqti bo'yicha bugun qo'shilganlar"""
     async with pool.acquire() as conn:
-        return await conn.fetchval("SELECT COUNT(*) FROM users WHERE DATE(first_start) = CURRENT_DATE")
+        return await conn.fetchval("""
+            SELECT COUNT(*) FROM users 
+            WHERE DATE(first_start AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tashkent') 
+                = DATE(NOW() AT TIME ZONE 'Asia/Tashkent')
+        """)
 
 
 async def get_week_users():
+    """Aniq oxirgi 7 kun ichida qo'shilganlar"""
     async with pool.acquire() as conn:
-        return await conn.fetchval(
-            "SELECT COUNT(*) FROM users WHERE first_start >= CURRENT_DATE - INTERVAL '7 days'"
-        )
+        return await conn.fetchval("""
+            SELECT COUNT(*) FROM users 
+            WHERE first_start >= NOW() - INTERVAL '7 days'
+        """)
 
 
 async def get_active_users_last_24h():
+    """Oxirgi 24 soat ichida botdan foydalanganlar"""
     async with pool.acquire() as conn:
-        return await conn.fetchval(
-            "SELECT COUNT(*) FROM users WHERE last_activity >= CURRENT_TIMESTAMP - INTERVAL '1 day'"
-        )
+        return await conn.fetchval("""
+            SELECT COUNT(*) FROM users 
+            WHERE last_activity >= NOW() - INTERVAL '24 hours'
+        """)
+
+
+async def get_today_active_users():
+    """O'zbekiston vaqti bo'yicha bugun faol bo'lganlar"""
+    async with pool.acquire() as conn:
+        return await conn.fetchval("""
+            SELECT COUNT(*) FROM users 
+            WHERE DATE(last_activity AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tashkent') 
+                = DATE(NOW() AT TIME ZONE 'Asia/Tashkent')
+        """)
 
 
 async def get_all_user_ids():
