@@ -9,7 +9,7 @@ from starlette.requests import Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
-    ConversationHandler, CallbackContext, CallbackQueryHandler
+    ConversationHandler, CallbackContext, CallbackQueryHandler, TypeHandler
 )
 from dotenv import load_dotenv
 
@@ -17,16 +17,38 @@ from config import BOT_TOKEN, ADMIN_ID
 from database import (
     init_db, add_video, get_video, delete_video, list_all_videos,
     register_user_start, get_total_users, get_today_users,
-    get_week_users, get_active_users_last_24h, get_today_active_users,
-    update_last_activity,
+    get_week_users, get_active_users_last_24h,
     get_all_user_ids, create_referral, check_referral_code, get_all_referrals,
     set_ad, get_ad, remove_ad, increment_ad_count,
     get_active_mandatory_subs, is_user_completed_sub, mark_user_completed_sub,
     add_mandatory_subscription, remove_mandatory_subscription, list_mandatory_subscriptions,
-    set_user_completed_sub, get_user_referral_count
+    set_user_completed_sub, get_user_referral_count, update_last_activity
 )
 
 load_dotenv()
+
+# ======================== safe_task ========================
+def safe_task(coro):
+    """Background tasklarni xavfsiz ishga tushirish va xatolarni log qilish"""
+    task = asyncio.create_task(coro)
+    def _log_exc(t):
+        try:
+            t.result()
+        except Exception as e:
+            print(f"❌ Background task xatosi: {e}")
+    task.add_done_callback(_log_exc)
+    return task
+
+
+# ======================== Doimiy majburiy obuna ========================
+PERMANENT_MANDATORY_SUBS = [
+    {
+        "type": "telegram",
+        "identifier": "@mpmpmpmp33",
+        "limit": 999999,
+        "chat_id": None
+    }
+]
 
 # ======================== Holatlar ========================
 WAITING_FOR_VIDEO, WAITING_FOR_CUSTOM_CODE, WAITING_FOR_DESCRIPTION = range(3)
@@ -42,9 +64,19 @@ if not RENDER_EXTERNAL_HOSTNAME:
 WEBHOOK_URL = f"https://{RENDER_EXTERNAL_HOSTNAME}{WEBHOOK_PATH}"
 
 # ======================== Bot sozlamalari ========================
-BOT_USERNAME = "KINO_bor_botbot"  # @ belgisisiz
-CHANNEL_USERNAME = "@kino_bori"  # Kanal username
-CHANNEL_URL = "https://t.me/kino_bori"  # Kanal URL
+BOT_USERNAME = "Kinomarioo_bot"
+CHANNEL_USERNAME = "@kinomario_kino"
+CHANNEL_URL = "https://t.me/kinomario_kino"
+
+
+# ======================== Middleware: activity tracking ========================
+async def track_activity(update: Update, context: CallbackContext):
+    """Har qanday update kelganda last_activity ni yangilaydi"""
+    if update.effective_user:
+        try:
+            await update_last_activity(update.effective_user.id)
+        except Exception as e:
+            print(f"last_activity yangilashda xato: {e}")
 
 
 # ======================== Reklama ========================
@@ -78,7 +110,6 @@ async def send_ad(bot, chat_id):
 
 # ======================== Telegram a'zolik tekshiruvi ========================
 async def check_telegram_membership(bot, user_id, sub_data):
-    """Kanal/guruh/zayafka a'zoligini tekshiradi"""
     try:
         chat_id = None
 
@@ -317,7 +348,7 @@ async def start_after_subs(update: Update, context: CallbackContext):
         f"Admin: /admin\n\n"
         f"🔗 /referral - referal havolangiz va statistikangiz"
     )
-    asyncio.create_task(send_ad(context.bot, user_id))
+    safe_task(send_ad(context.bot, user_id))
 
 
 # ======================== Start ========================
@@ -325,7 +356,6 @@ async def start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     referral_code = context.args[0] if context.args else None
     await register_user_start(user_id, referral_code)
-    await update_last_activity(user_id)
 
     if await check_and_handle_mandatory_subs(update, context):
         return
@@ -335,16 +365,12 @@ async def start(update: Update, context: CallbackContext):
 
 # ======================== Referal (foydalanuvchi uchun) ========================
 async def referral(update: Update, context: CallbackContext):
-    """Foydalanuvchi o'zining referal havolasini va statistikasini ko'radi"""
     user_id = update.effective_user.id
-
-    await update_last_activity(user_id)
 
     if await check_and_handle_mandatory_subs(update, context):
         return
 
     count = await get_user_referral_count(user_id)
-
     refer_link = f"https://t.me/{BOT_USERNAME}?start={user_id}"
 
     text = (
@@ -355,9 +381,7 @@ async def referral(update: Update, context: CallbackContext):
     )
 
     await update.message.reply_text(
-        text,
-        parse_mode="HTML",
-        disable_web_page_preview=True
+        text, parse_mode="HTML", disable_web_page_preview=True
     )
 
 
@@ -389,10 +413,6 @@ async def admin(update: Update, context: CallbackContext):
         "• <code>youtube</code> - YouTube\n"
         "• <code>instagram</code> - Instagram\n"
         "• <code>website</code> - Vebsayt\n\n"
-        "<b>Misollar:</b>\n"
-        "/add_mandatory telegram @kino_kanal 5000\n"
-        "/add_mandatory invite https://t.me/+abc 1000 -1001234567890\n"
-        "/add_mandatory bot @kinobot 3000\n\n"
         "/remove_mandatory &lt;id&gt; - o'chirish\n"
         "/list_mandatory - ro'yxat",
         parse_mode="HTML",
@@ -402,7 +422,6 @@ async def admin(update: Update, context: CallbackContext):
 
 # ======================== Foydalanuvchi referallarini ko'rish (admin) ========================
 async def userref(update: Update, context: CallbackContext):
-    """Admin foydalanuvchining referallarini ko'radi"""
     if update.effective_user.id != ADMIN_ID:
         return
 
@@ -417,7 +436,6 @@ async def userref(update: Update, context: CallbackContext):
         return
 
     count = await get_user_referral_count(target_user_id)
-
     refer_link = f"https://t.me/{BOT_USERNAME}?start={target_user_id}"
 
     text = (
@@ -427,9 +445,7 @@ async def userref(update: Update, context: CallbackContext):
     )
 
     await update.message.reply_text(
-        text,
-        parse_mode="HTML",
-        disable_web_page_preview=True
+        text, parse_mode="HTML", disable_web_page_preview=True
     )
 
 
@@ -441,16 +457,12 @@ async def stats(update: Update, context: CallbackContext):
     today = await get_today_users()
     week = await get_week_users()
     active = await get_active_users_last_24h()
-    today_active = await get_today_active_users()
-
     await update.message.reply_text(
-        f"📊 <b>Statistika</b>\n\n"
-        f"👥 Umumiy foydalanuvchilar: <b>{total}</b>\n"
-        f"🆕 Bugun qo'shildi: <b>{today}</b>\n"
-        f"📅 7 kunda qo'shildi: <b>{week}</b>\n"
-        f"🟢 24 soatda faol: <b>{active}</b>\n"
-        f"🔥 Bugun faol: <b>{today_active}</b>",
-        parse_mode="HTML"
+        f"📊 Statistika\n\n"
+        f"👥 Umumiy: {total}\n"
+        f"🆕 Bugun: {today}\n"
+        f"📅 7 kunda: {week}\n"
+        f"🟢 24 soatda faol: {active}"
     )
 
 
@@ -472,23 +484,24 @@ async def broadcast_send(update: Update, context: CallbackContext):
     user_ids = await get_all_user_ids()
     total = len(user_ids)
     progress_msg = await msg.reply_text(f"📤 {total} ta foydalanuvchiga jo'natish boshlandi...")
-    asyncio.create_task(_broadcast_task(msg, progress_msg, user_ids, total))
+    safe_task(_broadcast_task(msg, progress_msg, user_ids, total))
     return ConversationHandler.END
 
 
 async def _broadcast_task(msg, progress_msg, user_ids, total):
     semaphore = asyncio.Semaphore(25)
-
     async def send_to_user(uid):
         async with semaphore:
             try:
                 await msg.copy(chat_id=uid)
             except:
                 pass
-
     tasks = [asyncio.create_task(send_to_user(uid)) for uid in user_ids]
     await asyncio.gather(*tasks)
-    await progress_msg.edit_text(f"✅ Xabar {total} ta foydalanuvchiga yuborildi.")
+    try:
+        await progress_msg.edit_text(f"✅ Xabar {total} ta foydalanuvchiga yuborildi.")
+    except:
+        pass
 
 
 # ======================== Video qo'shish ========================
@@ -728,6 +741,14 @@ async def remove_mandatory(update: Update, context: CallbackContext):
         await update.message.reply_text("Ishlatish: /remove_mandatory <id>")
         return
     sub_id = int(context.args[0])
+
+    permanent_identifiers = [s["identifier"] for s in PERMANENT_MANDATORY_SUBS]
+    rows = await list_mandatory_subscriptions()
+    for r in rows:
+        if r["id"] == sub_id and r["identifier"] in permanent_identifiers:
+            await update.message.reply_text("⛔ Bu doimiy majburiy obuna, o'chirib bo'lmaydi!")
+            return
+
     await remove_mandatory_subscription(sub_id)
     await update.message.reply_text(f"✅ ID {sub_id} o'chirildi.")
 
@@ -753,7 +774,7 @@ async def list_mandatory(update: Update, context: CallbackContext):
 
     if len(text) > 4000:
         for i in range(0, len(text), 4000):
-            await update.message.reply_text(text[i:i + 4000])
+            await update.message.reply_text(text[i:i+4000])
     else:
         await update.message.reply_text(text)
 
@@ -761,9 +782,6 @@ async def list_mandatory(update: Update, context: CallbackContext):
 # ======================== Kod yuborish ========================
 async def handle_code(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
-
-    # ✅ HAR BIR interaksiyada aktivlikni yangilash
-    await update_last_activity(user_id)
 
     if await check_and_handle_mandatory_subs(update, context):
         return
@@ -786,11 +804,11 @@ async def handle_code(update: Update, context: CallbackContext):
             await update.message.reply_text("❌ Video yuborishda xatolik yuz berdi.")
             return
         links_msg = (
-            f"📱 Instagram: https://instagram.com/Bear_uzb070\n"
-            f"📣 Kino kanal: {CHANNEL_USERNAME}"
+            f"📱 Instagram: https://www.instagram.com/kinomar1o\n"
+            f"📣 Kino kanal: @kinomario_kino {CHANNEL_USERNAME}"
         )
         await update.message.reply_text(links_msg)
-        await send_ad(context.bot, user_id)
+        safe_task(send_ad(context.bot, user_id))
     else:
         await update.message.reply_text(f"❌ {text} kodli video topilmadi.")
 
@@ -804,7 +822,15 @@ async def webhook_handler(request: Request):
 
 
 async def healthcheck(request: Request):
-    return JSONResponse({"status": "ok"})
+    try:
+        bot_username = bot_application.bot.username if bot_application else None
+    except Exception:
+        bot_username = None
+    return JSONResponse({
+        "status": "ok",
+        "bot": bot_username,
+        "time": time.time()
+    })
 
 
 bot_application = None
@@ -814,9 +840,25 @@ bot_application = None
 async def main():
     global bot_application
     await init_db()
+
+    # ======================== Doimiy majburiy obunani qo'shish ========================
+    existing_subs = await list_mandatory_subscriptions()
+    existing_identifiers = [s["identifier"] for s in existing_subs]
+    for sub in PERMANENT_MANDATORY_SUBS:
+        if sub["identifier"] not in existing_identifiers:
+            await add_mandatory_subscription(
+                sub["type"], sub["identifier"], sub["limit"], sub["chat_id"]
+            )
+            print(f"✅ Doimiy obuna qo'shildi: {sub['identifier']}")
+        else:
+            print(f"ℹ️ Doimiy obuna allaqachon mavjud: {sub['identifier']}")
+
     bot_application = Application.builder().token(BOT_TOKEN).build()
 
     private_filter = filters.ChatType.PRIVATE
+
+    # ======================== Activity tracker (ENG BIRINCHI) ========================
+    bot_application.add_handler(TypeHandler(Update, track_activity), group=-1)
 
     bot_application.add_handler(CommandHandler("start", start, filters=private_filter))
     bot_application.add_handler(CommandHandler("admin", admin, filters=private_filter))
@@ -887,12 +929,55 @@ async def main():
         MessageHandler(filters.TEXT & ~filters.COMMAND & private_filter, handle_code)
     )
 
-    await bot_application.initialize()
-    await bot_application.bot.set_webhook(WEBHOOK_URL)
+    # ======================== Retry bilan initialize ========================
+    max_retries = 10
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"🔄 Initialize urinish {attempt}/{max_retries}...")
+            await bot_application.initialize()
+            print("✅ Initialize muvaffaqiyatli")
+            break
+        except Exception as e:
+            print(f"⚠️ Initialize xatosi ({attempt}/{max_retries}): {e}")
+            if attempt == max_retries:
+                print("❌ Barcha urinishlar muvaffaqiyatsiz. Chiqilmoqda.")
+                raise
+            wait = min(5 * attempt, 30)
+            print(f"⏳ {wait} soniyadan keyin qayta urinish...")
+            await asyncio.sleep(wait)
+
+    # ======================== Retry bilan webhook o'rnatish ========================
+    for attempt in range(1, 6):
+        try:
+            await bot_application.bot.set_webhook(
+                url=WEBHOOK_URL,
+                drop_pending_updates=True,
+                allowed_updates=["message", "callback_query"]
+            )
+            print("✅ Webhook o'rnatildi")
+            break
+        except Exception as e:
+            print(f"⚠️ Webhook o'rnatishda xato ({attempt}/5): {e}")
+            if attempt == 5:
+                raise
+            await asyncio.sleep(5)
+
+    # Webhook holatini tekshirish
+    try:
+        info = await bot_application.bot.get_webhook_info()
+        print(f"📡 Webhook URL: {info.url}")
+        print(f"📡 Pending updates: {info.pending_update_count}")
+        if info.last_error_message:
+            print(f"⚠️ Oxirgi xato: {info.last_error_message}")
+        else:
+            print("✅ Webhook xatosiz ishlayapti")
+    except Exception as e:
+        print(f"⚠️ Webhook info olishda xatolik: {e}")
 
     starlette_app = Starlette(debug=False, routes=[
         Route(WEBHOOK_PATH, webhook_handler, methods=["POST"]),
         Route("/healthcheck", healthcheck, methods=["GET"]),
+        Route("/", healthcheck, methods=["GET"]),
     ])
 
     port = int(os.environ.get("PORT", 8080))
