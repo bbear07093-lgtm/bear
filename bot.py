@@ -3,7 +3,6 @@ import asyncio
 import secrets
 import time
 import httpx
-from datetime import datetime
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -24,8 +23,7 @@ from database import (
     set_ad, get_ad, remove_ad, increment_ad_count,
     get_active_mandatory_subs, is_user_completed_sub, mark_user_completed_sub,
     add_mandatory_subscription, remove_mandatory_subscription, list_mandatory_subscriptions,
-    set_user_completed_sub, get_user_referral_count, update_last_activity,
-    get_mandatory_stats, fix_all_counts
+    set_user_completed_sub, get_user_referral_count, update_last_activity
 )
 
 load_dotenv()
@@ -474,9 +472,7 @@ async def admin(update: Update, context: CallbackContext):
         "<b>📛 Majburiy obuna:</b>\n"
         "/add_mandatory &lt;tur&gt; &lt;havola&gt; &lt;limit&gt; [chat_id]\n"
         "/remove_mandatory &lt;id&gt;\n"
-        "/list_mandatory - ro'yxat\n"
-        "/mandatory_check - tekshirish\n"
-        "/fix_counts - qayta hisoblash\n\n"
+        "/list_mandatory\n\n"
         "<b>Turlar:</b> telegram, group, invite, bot, youtube, instagram, website",
         parse_mode="HTML",
         disable_web_page_preview=True
@@ -487,22 +483,16 @@ async def admin(update: Update, context: CallbackContext):
 async def stats(update: Update, context: CallbackContext):
     if update.effective_user.id != ADMIN_ID:
         return
-
     total = await get_total_users()
     today = await get_today_users()
     week = await get_week_users()
     active = await get_active_users_last_24h()
-
-    now_uz = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
     await update.message.reply_text(
-        f"📊 <b>Statistika</b>\n\n"
-        f"👥 Umumiy: <b>{total}</b>\n"
-        f"🆕 Bugun: <b>{today}</b>\n"
-        f"📅 7 kunda: <b>{week}</b>\n"
-        f"🟢 24 soatda faol: <b>{active}</b>\n\n"
-        f"🕐 Server vaqti: {now_uz} UTC",
-        parse_mode="HTML"
+        f"📊 Statistika\n\n"
+        f"👥 Umumiy: {total}\n"
+        f"🆕 Bugun: {today}\n"
+        f"📅 7 kunda: {week}\n"
+        f"🟢 24 soatda faol: {active}"
     )
 
 
@@ -576,7 +566,7 @@ async def _broadcast_task(msg, progress_msg, user_ids, total):
         pass
 
 
-# ======================== Video qo'shish ========================
+# ======================== Video qo'shish (TUZATILGAN) ========================
 async def addvideo_start(update: Update, context: CallbackContext):
     if update.effective_user.id != ADMIN_ID:
         return ConversationHandler.END
@@ -923,88 +913,22 @@ async def list_mandatory(update: Update, context: CallbackContext):
         await update.message.reply_text("Hech qanday majburiy obuna yo'q.")
         return
 
-    text = "📋 <b>Majburiy obunalar:</b>\n\n"
+    text = "📋 Majburiy obunalar:\n\n"
     for r in rows:
-        is_active = r["is_active"]
-        current = r["current_count"]
-        limit = r["limit_count"]
-        percent = int((current / limit) * 100) if limit > 0 else 0
-
-        if is_active and current < limit:
-            status = "🟢 FAOL"
-        elif is_active and current >= limit:
-            status = "🟡 LIMIT TO'LGAN"
-        else:
-            status = "🔴 O'CHIRILGAN"
-
+        status = "✅ faol" if r["is_active"] else "❌ faol emas"
         text += (
-            f"<b>ID {r['id']}</b>: {r['type']}\n"
-            f"  🔗 {r['identifier']}\n"
-            f"  📊 {current}/{limit} ({percent}%)\n"
-            f"  {status}"
+            f"ID {r['id']}: {r['type']} | {r['identifier']}\n"
+            f"  Limit: {r['limit_count']} | Bajargan: {r['current_count']} | {status}"
         )
         if r["chat_id"]:
-            text += f"\n  💬 Chat ID: {r['chat_id']}"
+            text += f" | Chat ID: {r['chat_id']}"
         text += "\n\n"
 
     if len(text) > 4000:
         for i in range(0, len(text), 4000):
-            await update.message.reply_text(text[i:i+4000], parse_mode="HTML")
+            await update.message.reply_text(text[i:i+4000])
     else:
-        await update.message.reply_text(text, parse_mode="HTML")
-
-
-async def mandatory_check(update: Update, context: CallbackContext):
-    """current_count va haqiqiy sonni taqqoslash"""
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    rows = await get_mandatory_stats()
-
-    if not rows:
-        await update.message.reply_text("Hech qanday majburiy obuna yo'q.")
-        return
-
-    text = "🔍 <b>Majburiy obuna tekshiruvi:</b>\n\n"
-    has_error = False
-
-    for r in rows:
-        bazadagi = r["current_count"]
-        haqiqiy = r["real_count"]
-        diff = bazadagi - haqiqiy
-
-        emoji = "✅" if diff == 0 else "⚠️"
-        if diff != 0:
-            has_error = True
-
-        text += (
-            f"{emoji} <b>ID {r['id']}</b>: {r['identifier']}\n"
-            f"   Bazadagi: {bazadagi} | Haqiqiy: {haqiqiy}\n"
-        )
-        if diff != 0:
-            text += f"   ❗ Farq: {diff:+d}\n"
-        text += "\n"
-
-    if has_error:
-        text += "\n⚠️ Farq bor. Tuzatish uchun: <code>/fix_counts</code>"
-    else:
-        text += "\n✅ Hammasi to'g'ri!"
-
-    if len(text) > 4000:
-        for i in range(0, len(text), 4000):
-            await update.message.reply_text(text[i:i+4000], parse_mode="HTML")
-    else:
-        await update.message.reply_text(text, parse_mode="HTML")
-
-
-async def fix_counts(update: Update, context: CallbackContext):
-    """current_count ni qayta hisoblash"""
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    await fix_all_counts()
-    invalidate_mandatory_cache()
-    await update.message.reply_text("✅ Barcha `current_count` lar qayta hisoblandi!")
+        await update.message.reply_text(text)
 
 
 # ======================== Kod yuborish ========================
@@ -1106,11 +1030,9 @@ async def main():
     bot_application.add_handler(CommandHandler("add_mandatory", add_mandatory, filters=private_filter))
     bot_application.add_handler(CommandHandler("remove_mandatory", remove_mandatory, filters=private_filter))
     bot_application.add_handler(CommandHandler("list_mandatory", list_mandatory, filters=private_filter))
-    bot_application.add_handler(CommandHandler("mandatory_check", mandatory_check, filters=private_filter))
-    bot_application.add_handler(CommandHandler("fix_counts", fix_counts, filters=private_filter))
     bot_application.add_handler(CallbackQueryHandler(confirm_all_subs_callback, pattern="^confirm_all_subs$"))
 
-    # ======================== addvideo ConversationHandler ========================
+    # ======================== addvideo ConversationHandler (TUZATILGAN) ========================
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("addvideo", addvideo_start, filters=private_filter)],
         states={
