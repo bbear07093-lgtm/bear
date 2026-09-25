@@ -22,7 +22,7 @@ from database import (
     set_ad, get_ad, remove_ad, increment_ad_count,
     get_active_mandatory_subs, is_user_completed_sub, mark_user_completed_sub,
     add_mandatory_subscription, remove_mandatory_subscription, list_mandatory_subscriptions,
-    set_user_completed_sub
+    set_user_completed_sub, update_user_activity   # ← YANGI qo'shildi
 )
 
 load_dotenv()
@@ -415,15 +415,26 @@ async def broadcast_send(update: Update, context: CallbackContext):
 
 async def _broadcast_task(msg, progress_msg, user_ids, total):
     semaphore = asyncio.Semaphore(25)
+    success = 0
+    failed = 0
+
     async def send_to_user(uid):
+        nonlocal success, failed
         async with semaphore:
             try:
                 await msg.copy(chat_id=uid)
-            except:
-                pass
+                success += 1
+            except Exception:
+                failed += 1
+
     tasks = [asyncio.create_task(send_to_user(uid)) for uid in user_ids]
     await asyncio.gather(*tasks)
-    await progress_msg.edit_text(f"✅ Xabar {total} ta foydalanuvchiga yuborildi.")
+    await progress_msg.edit_text(
+        f"✅ Xabar yuborildi.\n\n"
+        f"✔️ Muvaffaqiyatli: {success}\n"
+        f"❌ Xatolik: {failed}\n"
+        f"📊 Jami: {total}"
+    )
 
 
 # ======================== Video qo'shish ========================
@@ -697,6 +708,7 @@ async def list_mandatory(update: Update, context: CallbackContext):
 # ======================== Kod yuborish ========================
 async def handle_code(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
+    await update_user_activity(user_id)   # ← YANGI: har bir xabarda aktivlikni yangilash
 
     if await check_and_handle_mandatory_subs(update, context):
         return
