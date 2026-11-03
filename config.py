@@ -2,7 +2,7 @@ import os
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8729235570:AAHtlsdBhenTt6CYepGxQtjg7Z5gDKaFoEw")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "2010030869"))
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://bear_qo11_user:xiRoIfNTNjih3bnLQCvn3xNxz9rbNUj8@dpg-dalqg72d0e5s738a15ug-a.oregon-postgres.render.com/bear_qo11")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://b_j7hf_user:x47pD6012DJYBkcU1DETBkVpEXw3fsxD@dpg-dbl22r8ae00c73cch71g-a.oregon-postgres.render.com/b_j7hf")
 
 # Telethon uchun
 API_ID = int(os.getenv("API_ID", "38486800"))
