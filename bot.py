@@ -7,6 +7,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.requests import Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
     ConversationHandler, CallbackContext, CallbackQueryHandler
@@ -49,19 +50,18 @@ async def track_user_middleware(update: Update, context: CallbackContext):
     """
     try:
         user = update.effective_user
-        chat = update.effective_chat
-        if not user or not chat:
-            return
-        # Faqat shaxsiy chatlar
-        if chat.type != "private":
-            return
-        # Botlarni hisobga olmaymiz
-        if user.is_bot:
+        if not user or user.is_bot:
             return
 
-        user_id = user.id
-        # register_user_start: agar mavjud bo'lmasa qo'shadi, mavjud bo'lsa last_activity yangilaydi
-        await register_user_start(user_id)
+        # Chat ni aniqlash (callback query uchun ham)
+        chat = update.effective_chat
+        if chat is None and update.callback_query and update.callback_query.message:
+            chat = update.callback_query.message.chat
+
+        if not chat or chat.type != "private":
+            return
+
+        await register_user_start(user.id)
     except Exception as e:
         print(f"Middleware xatolik: {e}")
 
@@ -280,7 +280,6 @@ async def confirm_all_subs_callback(update: Update, context: CallbackContext):
     async def check_single_sub(sub):
         if sub["type"] in telegram_types:
             result = await check_telegram_membership(context.bot, user_id, sub)
-            # ✅ TUZATILDI: None = xatolik = a'zo emas deb hisoblaymiz
             if result is None:
                 return (sub, False)
             return (sub, result)
@@ -339,7 +338,6 @@ async def start_after_subs(update: Update, context: CallbackContext):
 async def start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     referral_code = context.args[0] if context.args else None
-    # Middleware allaqachon register_user_start ni chaqirgan, lekin referral code uchun yana chaqiramiz
     await register_user_start(user_id, referral_code)
 
     if await check_and_handle_mandatory_subs(update, context):
@@ -720,7 +718,6 @@ async def list_mandatory(update: Update, context: CallbackContext):
 # ======================== Kod yuborish ========================
 async def handle_code(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
-    # Middleware allaqachon register_user_start chaqirgan, lekin aktivlik uchun qo'shimcha
     await update_user_activity(user_id)
 
     if await check_and_handle_mandatory_subs(update, context):
@@ -772,7 +769,23 @@ bot_application = None
 async def main():
     global bot_application
     await init_db()
-    bot_application = Application.builder().token(BOT_TOKEN).build()
+
+    # 🔥 MUHIM: Kutish vaqtlarini oshirish (Render uchun)
+    request = HTTPXRequest(
+        connection_pool_size=8,
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=10.0,
+    )
+
+    bot_application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .request(request)
+        .get_updates_request(request)
+        .build()
+    )
 
     private_filter = filters.ChatType.PRIVATE
 
@@ -853,8 +866,23 @@ async def main():
         MessageHandler(filters.TEXT & ~filters.COMMAND & private_filter, handle_code)
     )
 
-    await bot_application.initialize()
-    await bot_application.bot.set_webhook(WEBHOOK_URL)
+    # 🔥 Qayta urinish bilan initialize
+    for attempt in range(3):
+        try:
+            await bot_application.initialize()
+            print(f"✅ Initialize muvaffaqiyatli (urinish {attempt+1})")
+            break
+        except Exception as e:
+            print(f"⚠️ Initialize urinish {attempt+1} muvaffaqiyatsiz: {e}")
+            if attempt == 2:
+                raise
+            await asyncio.sleep(2 ** attempt)
+
+    await bot_application.bot.set_webhook(
+        WEBHOOK_URL,
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query"],
+    )
 
     starlette_app = Starlette(debug=False, routes=[
         Route(WEBHOOK_PATH, webhook_handler, methods=["POST"]),
