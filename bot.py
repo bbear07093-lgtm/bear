@@ -31,7 +31,6 @@ load_dotenv()
 
 # ======================== safe_task ========================
 def safe_task(coro):
-    """Background tasklarni xavfsiz ishga tushirish va xatolarni log qilish"""
     task = asyncio.create_task(coro)
 
     def _log_exc(t):
@@ -48,11 +47,10 @@ def safe_task(coro):
 _mandatory_cache = {"data": None, "timestamp": 0, "ttl": 60}
 _ad_cache = {"data": None, "timestamp": 0, "ttl": 120}
 _last_activity_cache = {}
-ACTIVITY_UPDATE_INTERVAL = 300  # 5 daqiqa
+ACTIVITY_UPDATE_INTERVAL = 300
 
-# Reklama rate-limit (har bir foydalanuvchi uchun)
 _ad_sent_cache = {}
-AD_SEND_INTERVAL = 3600  # 1 soat
+AD_SEND_INTERVAL = 3600
 
 
 async def get_cached_mandatory_subs():
@@ -97,12 +95,20 @@ WAITING_BROADCAST = 3
 WAITING_REF_NAME = 4
 WAITING_AD_CONTENT = 5
 
-# ======================== Webhook ========================
+# ======================== Webhook — HIMOYALANGAN ========================
 WEBHOOK_PATH = "/webhook"
+
 RENDER_EXTERNAL_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
 if not RENDER_EXTERNAL_HOSTNAME:
-    raise ValueError("RENDER_EXTERNAL_HOSTNAME topilmadi")
-WEBHOOK_URL = f"https://{RENDER_EXTERNAL_HOSTNAME}{WEBHOOK_PATH}"
+    # Zaxira variantlar
+    RENDER_EXTERNAL_HOSTNAME = os.environ.get("WEBHOOK_HOST", "")
+if not RENDER_EXTERNAL_HOSTNAME:
+    # Render avtomatik bermasa, PORT va boshqa belgilardan foydalanib bo'lmaydi —
+    # lekin botni yiqitmaslik uchun bo'sh qoldiramiz va keyin tekshiramiz
+    print("⚠️ RENDER_EXTERNAL_HOSTNAME topilmadi! WEBHOOK_HOST env'ini qo'shing.")
+    WEBHOOK_URL = ""
+else:
+    WEBHOOK_URL = f"https://{RENDER_EXTERNAL_HOSTNAME}{WEBHOOK_PATH}"
 
 # ======================== Bot sozlamalari ========================
 BOT_USERNAME = ""
@@ -113,6 +119,8 @@ INSTAGRAM_URL = ""
 
 # ======================== SELF-PING ========================
 async def self_ping():
+    if not RENDER_EXTERNAL_HOSTNAME:
+        return
     await asyncio.sleep(30)
     ping_count = 0
     while True:
@@ -132,6 +140,9 @@ async def webhook_watchdog():
         await asyncio.sleep(240)
         if bot_application is None:
             print("⚠️ Watchdog: bot_application hali None")
+            continue
+        if not WEBHOOK_URL:
+            print("⚠️ Watchdog: WEBHOOK_URL bo'sh, o'tkazib yuborildi")
             continue
         try:
             info = await bot_application.bot.get_webhook_info()
@@ -153,9 +164,6 @@ async def webhook_watchdog():
 
 # ======================== Activity tracking ========================
 async def track_activity(update: Update, context: CallbackContext):
-    """Har qanday update da last_activity ni yangilaydi (cache bilan).
-    MUHIM: register_user_start CHAQIRILMAYDI — bu referal bug'iga olib keladi.
-    register_user_start faqat /start da chaqiriladi."""
     if not update.effective_user:
         return
     user = update.effective_user
@@ -175,7 +183,6 @@ async def track_activity(update: Update, context: CallbackContext):
 
 # ======================== Reklama ========================
 async def send_ad(bot, chat_id):
-    # Rate-limit — har bir foydalanuvchiga 1 soatda 1 marta
     now = time.time()
     last_sent = _ad_sent_cache.get(chat_id, 0)
     if now - last_sent < AD_SEND_INTERVAL:
@@ -211,26 +218,21 @@ async def send_ad(bot, chat_id):
 
 # ======================== URL YORDAMCHI ========================
 def build_channel_url(sub_type: str, identifier: str):
-    """Har xil formatdagi identifier'dan to'g'ri Telegram URL yasaydi."""
     if not identifier:
         return None
     ident = identifier.strip()
     if not ident:
         return None
 
-    # Allaqachon to'liq URL
     if ident.startswith("http://") or ident.startswith("https://"):
         return ident
 
-    # Invite link
     if "t.me/+" in ident or "joinchat" in ident:
         return f"https://{ident.lstrip('@')}"
 
-    # t.me/... bilan boshlanadigan
     if ident.startswith("t.me/"):
         return f"https://{ident}"
 
-    # @username yoki username
     if sub_type in ("telegram", "group", "bot"):
         username = ident.lstrip("@").split("/")[-1].split("?")[0]
         if not username:
@@ -250,11 +252,6 @@ def build_channel_url(sub_type: str, identifier: str):
 
 # ======================== Telegram a'zolik tekshiruvi ========================
 async def check_telegram_membership(bot, user_id, sub_data):
-    """
-    True  — a'zo
-    False — a'zo emas
-    None  — tekshirib bo'lmadi (xato / topilmadi)
-    """
     try:
         chat_id = None
         if sub_data.get("chat_id"):
@@ -291,7 +288,6 @@ async def check_telegram_membership(bot, user_id, sub_data):
 
         member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
 
-        # ✅ TUZATILDI: restricted holati alohida
         if member.status == "restricted":
             return bool(getattr(member, "is_member", False))
         return member.status in ("member", "administrator", "creator")
@@ -309,9 +305,6 @@ async def check_telegram_membership(bot, user_id, sub_data):
 
 # ======================== Majburiy obuna interfeysi ========================
 async def show_mandatory_subs(update: Update, context: CallbackContext):
-    """Majburiy obunalar ro'yxatini ko'rsatadi.
-    Qaytaradi: True — hammasi bajarilgan, False — hali bajarilmagan."""
-    # callback_query ham qo'llab-quvvatlanadi
     if update.callback_query:
         message = update.callback_query.message
         user_id = update.callback_query.from_user.id
@@ -365,7 +358,6 @@ async def show_mandatory_subs(update: Update, context: CallbackContext):
     confirm_button = [[InlineKeyboardButton("✅ Obuna bo'ldim", callback_data="confirm_all_subs")]]
     reply_markup = InlineKeyboardMarkup(url_buttons + confirm_button)
 
-    # Eski xabarni o'chirish
     if "mandatory_msg_id" in context.user_data:
         try:
             await context.bot.delete_message(
@@ -388,14 +380,12 @@ async def show_mandatory_subs(update: Update, context: CallbackContext):
     return False
 
 
-# ======================== Majburiy obuna tekshiruvi ========================
 async def check_and_handle_mandatory_subs(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     cache_key = "sub_check_cache"
     cache_time_key = "sub_check_time"
     current_time = time.time()
 
-    # 30 soniyalik cache
     if cache_time_key in context.user_data:
         if current_time - context.user_data[cache_time_key] < 30:
             if context.user_data.get(cache_key, False):
@@ -430,7 +420,6 @@ async def check_and_handle_mandatory_subs(update: Update, context: CallbackConte
                         await set_user_completed_sub(user_id, sub["id"], False)
                     return (sub, False)
                 else:
-                    # None — tekshirib bo'lmadi, eski holatni saqlaymiz
                     return (sub, already_completed)
             else:
                 return (sub, already_completed)
@@ -464,7 +453,6 @@ async def check_and_handle_mandatory_subs(update: Update, context: CallbackConte
         return False
 
 
-# ======================== Callback: obunani tasdiqlash ========================
 async def confirm_all_subs_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     try:
@@ -474,7 +462,6 @@ async def confirm_all_subs_callback(update: Update, context: CallbackContext):
 
     user_id = update.effective_user.id
 
-    # Cache ni tozalash — hoziroq tekshirilsin
     context.user_data.pop("sub_check_cache", None)
     context.user_data.pop("sub_check_time", None)
 
@@ -609,7 +596,7 @@ async def start(update: Update, context: CallbackContext):
     await start_after_subs(update, context)
 
 
-# ======================== Referal (foydalanuvchi) ========================
+# ======================== Referal ========================
 async def referral(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     if await check_and_handle_mandatory_subs(update, context):
@@ -675,7 +662,6 @@ async def stats(update: Update, context: CallbackContext):
     )
 
 
-# ======================== Foydalanuvchi referallari (admin) ========================
 async def userref(update: Update, context: CallbackContext):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -790,7 +776,6 @@ async def addvideo_video(update: Update, context: CallbackContext):
 
 
 async def addvideo_wrong_file(update: Update, context: CallbackContext):
-    """Video o'rniga boshqa narsa yuborilsa."""
     await update.message.reply_text(
         "❌ Iltimos, video yuboring (Video yoki File sifatida)."
     )
@@ -1232,10 +1217,8 @@ async def main():
     bot_application = Application.builder().token(BOT_TOKEN).build()
     private_filter = filters.ChatType.PRIVATE
 
-    # Activity tracker (eng birinchi, group=-1)
     bot_application.add_handler(TypeHandler(Update, track_activity), group=-1)
 
-    # Asosiy komandalar
     bot_application.add_handler(CommandHandler("start", start, filters=private_filter))
     bot_application.add_handler(CommandHandler("admin", admin, filters=private_filter))
     bot_application.add_handler(CommandHandler("stats", stats, filters=private_filter))
@@ -1253,7 +1236,6 @@ async def main():
         CallbackQueryHandler(confirm_all_subs_callback, pattern="^confirm_all_subs$")
     )
 
-    # ======================== addvideo ConversationHandler ========================
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("addvideo", addvideo_start, filters=private_filter)],
         states={
@@ -1285,7 +1267,6 @@ async def main():
     )
     bot_application.add_handler(conv_handler)
 
-    # ======================== broadcast ConversationHandler ========================
     broadcast_conv = ConversationHandler(
         entry_points=[CommandHandler("broadcast", broadcast_start, filters=private_filter)],
         states={
@@ -1300,7 +1281,6 @@ async def main():
     )
     bot_application.add_handler(broadcast_conv)
 
-    # ======================== createref ConversationHandler ========================
     ref_conv = ConversationHandler(
         entry_points=[CommandHandler("createref", createref_start, filters=private_filter)],
         states={
@@ -1315,7 +1295,6 @@ async def main():
     )
     bot_application.add_handler(ref_conv)
 
-    # ======================== setad ConversationHandler ========================
     ad_conv = ConversationHandler(
         entry_points=[CommandHandler("setad", setad_start, filters=private_filter)],
         states={
@@ -1330,12 +1309,11 @@ async def main():
     )
     bot_application.add_handler(ad_conv)
 
-    # Oxirgi handler (kod yuborish)
     bot_application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & private_filter, handle_code)
     )
 
-    # ======================== Retry bilan initialize ========================
+    # ======================== Initialize ========================
     max_retries = 10
     for attempt in range(1, max_retries + 1):
         try:
@@ -1352,38 +1330,42 @@ async def main():
             print(f"⏳ {wait} soniyadan keyin qayta urinish...")
             await asyncio.sleep(wait)
 
-    # ======================== Retry bilan webhook ========================
-    for attempt in range(1, 6):
+    # ======================== Webhook ========================
+    if WEBHOOK_URL:
+        for attempt in range(1, 6):
+            try:
+                await bot_application.bot.set_webhook(
+                    url=WEBHOOK_URL,
+                    drop_pending_updates=True,
+                    allowed_updates=["message", "callback_query"]
+                )
+                print(f"✅ Webhook o'rnatildi: {WEBHOOK_URL}")
+                break
+            except Exception as e:
+                print(f"⚠️ Webhook xatosi ({attempt}/5): {e}")
+                if attempt == 5:
+                    print("❌ Webhook o'rnatib bo'lmadi, lekin bot davom etadi")
+                await asyncio.sleep(5)
+
         try:
-            await bot_application.bot.set_webhook(
-                url=WEBHOOK_URL,
-                drop_pending_updates=True,
-                allowed_updates=["message", "callback_query"]
-            )
-            print("✅ Webhook o'rnatildi")
-            break
+            info = await bot_application.bot.get_webhook_info()
+            print(f"📡 Webhook URL: {info.url}")
+            print(f"📡 Pending updates: {info.pending_update_count}")
+            if info.last_error_message:
+                print(f"⚠️ Oxirgi xato: {info.last_error_message}")
+            else:
+                print("✅ Webhook xatosiz ishlayapti")
         except Exception as e:
-            print(f"⚠️ Webhook xatosi ({attempt}/5): {e}")
-            if attempt == 5:
-                raise
-            await asyncio.sleep(5)
+            print(f"⚠️ Webhook info xatosi: {e}")
+    else:
+        print("⚠️ WEBHOOK_URL bo'sh — webhook o'rnatilmadi!")
 
-    try:
-        info = await bot_application.bot.get_webhook_info()
-        print(f"📡 Webhook URL: {info.url}")
-        print(f"📡 Pending updates: {info.pending_update_count}")
-        if info.last_error_message:
-            print(f"⚠️ Oxirgi xato: {info.last_error_message}")
-        else:
-            print("✅ Webhook xatosiz ishlayapti")
-    except Exception as e:
-        print(f"⚠️ Webhook info xatosi: {e}")
-
-    # ======================== SELF-PING + WATCHDOG ========================
+    # ======================== Background tasks ========================
     asyncio.create_task(self_ping())
     asyncio.create_task(webhook_watchdog())
     print("💓 Self-ping (1 daqiqa) va watchdog (4 daqiqa) ishga tushdi")
 
+    # ======================== Starlette app ========================
     starlette_app = Starlette(debug=False, routes=[
         Route(WEBHOOK_PATH, webhook_handler, methods=["POST"]),
         Route("/healthcheck", healthcheck, methods=["GET"]),
@@ -1391,15 +1373,22 @@ async def main():
     ])
 
     port = int(os.environ.get("PORT", 8080))
-    print(f"✅ Bot ishga tushdi, webhook: {WEBHOOK_URL}")
+    print(f"🚀 Server ishga tushmoqda: host=0.0.0.0, port={port}")
+    print(f"✅ Bot tayyor, webhook: {WEBHOOK_URL}")
+
     import uvicorn
-    config = uvicorn.Config(starlette_app, host="0.0.0.0", port=port, log_level="info")
+    config = uvicorn.Config(
+        starlette_app,
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+        access_log=False,
+    )
     server = uvicorn.Server(config)
 
     try:
         await server.serve()
     finally:
-        # Graceful shutdown
         try:
             await bot_application.shutdown()
             print("🛑 Bot to'g'ri to'xtatildi")
